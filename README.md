@@ -1,1 +1,4 @@
 # Aerial_Photo_Classifier
+空撮画像をCNNモデルで分類するためのPythonコード
+道路領域を重ね合わせて4チャンネルで学習するときはwithRoad
+二値分類はBinaryClass
