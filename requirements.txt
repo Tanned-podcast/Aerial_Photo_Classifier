@@ -1,0 +1,21 @@
+# Core dependencies
+numpy
+pandas
+matplotlib
+seaborn
+
+# PyTorchとtorchvisionはGPUの性能にバージョンを合わせないといけないので、
+# 別途PyTorch公式HPからインストールしてください　https://pytorch.org/
+
+# Image Processing
+opencv-python
+Pillow
+
+# Machine Learning
+scikit-learn
+scipy
+statsmodels
+
+# Utilities
+japanize-matplotlib
+
