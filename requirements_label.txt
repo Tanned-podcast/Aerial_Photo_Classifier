@@ -1,0 +1,1 @@
+#LabelStudioを動かすための環境　LINUX専用なので必ずWSLで
