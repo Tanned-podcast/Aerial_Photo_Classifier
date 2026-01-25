@@ -528,9 +528,9 @@ def main(
 
 if __name__ == "__main__":
     # パラメータ設定（必要に応じて変更）
-    MODEL_WEIGHT_PATH = r"C:\Users\kyohe\Aerial_Photo_Classifier\Sandbox\XAI_test\Weights\model_weights20251212_1758.pth"
-    TEST_IMAGE_DIR = r"C:\Users\kyohe\Aerial_Photo_Classifier\Sandbox\XAI_test\Test"  # intact/とdamaged/サブディレクトリを含む
-    OUTPUT_ROOT_DIR = r"C:\Users\kyohe\Aerial_Photo_Classifier\Sandbox\XAI_test\Result_XAI"
+    MODEL_WEIGHT_PATH = r"C:\Users\kyohe\Aerial_Photo_Classifier\20251209Data\Weights\150\model_weights20251212_1758.pth"
+    TEST_IMAGE_DIR = r"C:\Users\kyohe\Aerial_Photo_Classifier\20251209Data\Test"  # intact/とdamaged/サブディレクトリを含む
+    OUTPUT_ROOT_DIR = r"C:\Users\kyohe\Aerial_Photo_Classifier\20251209Data\Result_XAI"
     ALPHA = 0.4
     IMG_SIZE = 224
     USE_PRETRAINED = False
