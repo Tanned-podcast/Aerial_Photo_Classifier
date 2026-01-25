@@ -11,14 +11,19 @@ ResNet50 画像分類モデルに対する Grad-CAM++ 可視化
 import os
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
+from torchvision.transforms import v2
+import cv2
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, List
 import warnings
 import seaborn as sns
 import japanize_matplotlib
+import pandas as pd
+from sklearn.metrics import confusion_matrix
 sns.set() # seabornの設定を無効化
 sns.reset_orig() # seabornの設定をリセットしてmatplotlibのデフォルトに戻す
 
@@ -75,7 +80,7 @@ def load_model(model_weight_path: str, num_classes: int = 2, device: torch.devic
     return model
 
 
-def preprocess_image(image_path: str, img_size: Tuple[int, int] = (512, 512)) -> Tuple[torch.Tensor, np.ndarray, Tuple[int, int]]:
+def preprocess_image(image_path: str, img_size: int = 512) -> Tuple[torch.Tensor, np.ndarray, Tuple[int, int]]:
     """
     画像を前処理してテンソルに変換する
     
@@ -86,24 +91,30 @@ def preprocess_image(image_path: str, img_size: Tuple[int, int] = (512, 512)) ->
     Returns:
         (preprocessed_tensor, original_image_array, original_size)
     """
-    # 画像を読み込み
-    img = Image.open(image_path).convert('RGB')
-    original_size = img.size  # (width, height)
+    img1 = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2RGB)
+    height, width = img1.shape[:2]  # OpenCV は先に高さ、次に幅
+    original_size = (width, height) 
     
-    # 前処理（ImageNet正規化）
-    transform = T.Compose([
-        T.Resize(img_size, interpolation=Image.BILINEAR),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+    # リサイズ（可視化用に保存）
+    img_resized = cv2.resize(img1, (img_size, img_size))
+    
+    # 可視化用の画像配列（リサイズ後、テンソル変換前）
+    img_array = img_resized.astype(np.float32) / 255.0  # (H, W, 3), [0, 1]
     
     # テンソルに変換
-    img_tensor = transform(img).unsqueeze(0)  # (1, 3, H, W)
+    img_tensor = TF.to_tensor(img_resized)
+
+    # データの変形 (transforms)
+    #入力データに施す処理
+    transforms = v2.Compose([
+            #v2.RandomHorizontalFlip(p=0.5),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=[0,0,0], std=[0.2, 0.2, 0.2]),
+    ])
+
+    transformed_img = transforms(img_tensor)
     
-    # 元画像をnumpy配列に変換（可視化用）
-    img_array = np.array(img.resize(img_size, Image.BILINEAR)) / 255.0  # (H, W, 3), [0, 1]
-    
-    return img_tensor, img_array, original_size
+    return transformed_img, img_array, original_size
 
 
 def get_class_probabilities(model: torch.nn.Module, img_tensor: torch.Tensor, 
@@ -128,12 +139,16 @@ def get_class_probabilities(model: torch.nn.Module, img_tensor: torch.Tensor,
     with torch.no_grad():
         # 推論
         logits = model(img_tensor)  # (1, num_classes)
+        # print(logits)
         
         # Softmaxを適用
         probs = F.softmax(logits, dim=1)  # (1, num_classes)
         
         # 予測クラス
         pred_class = torch.argmax(probs, dim=1).item()
+        _, predicted = torch.max(logits, 1)
+        # print(pred_class, predicted)
+
         
         # numpy配列に変換
         prob_array = probs[0].cpu().numpy()  # (num_classes,)
@@ -188,63 +203,69 @@ def visualize_xai_results(
         output_path: 出力ファイルパス
         alpha: αブレンドの透明度
     """
-    fig, axes = plt.subplots(3, 2, figsize=(12, 18))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 18), 
+        subplot_kw=dict(box_aspect=1))
     axes = axes.flatten()
     
-    fontsize = 24
-    labelsize = 18
+    fontsize = 36
+    labelsize = 24
 
     # 0. 元画像
     axes[0].imshow(original_img)
     axes[0].set_title('元画像', fontsize=fontsize)
     axes[0].axis('off')
 
-    # 1. intact クラスの Grad-CAM++
-    im1 = axes[1].imshow(cam_intact_norm, cmap='jet', vmin=0, vmax=1)
-    axes[1].set_title('intact クラスの Grad-CAM++', fontsize=fontsize)
-    axes[1].axis('off')
-    plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04).ax.tick_params(labelsize=labelsize)
-    
-    # 2. intact クラスの CAM + 元画像（overlay）
+    # 1. intact クラスの CAM + 元画像（overlay）
     cam_intact_overlay = show_cam_on_image(original_img, cam_intact_norm, use_rgb=True, image_weight=1.0-alpha)
-    axes[2].imshow(cam_intact_overlay)
-    axes[2].set_title('intact クラスの CAM + 元画像', fontsize=fontsize)
+    axes[1].imshow(cam_intact_overlay)
+    axes[1].set_title('元画像 & 被害なしの\nGrad-CAM++', fontsize=fontsize)
+    axes[1].axis('off')
+
+    # 2. damaged クラスの CAM + 元画像（overlay）
+    cam_damaged_overlay = show_cam_on_image(original_img, cam_damaged_norm, use_rgb=True, image_weight=1.0-alpha)
+    axes[2].imshow(cam_damaged_overlay)
+    axes[2].set_title('元画像 & 被害ありの\nGrad-CAM++', fontsize=fontsize)
     axes[2].axis('off')
 
-    # 3. damaged クラスの Grad-CAM++
-    im3 = axes[3].imshow(cam_damaged_norm, cmap='jet', vmin=0, vmax=1)
-    axes[3].set_title('damaged クラスの Grad-CAM++', fontsize=fontsize)
-    axes[3].axis('off')
-    plt.colorbar(im3, ax=axes[3], fraction=0.046, pad=0.04).ax.tick_params(labelsize=labelsize)
-    
-    # 4. damaged クラスの CAM + 元画像（overlay）
-    cam_damaged_overlay = show_cam_on_image(original_img, cam_damaged_norm, use_rgb=True, image_weight=1.0-alpha)
-    axes[4].imshow(cam_damaged_overlay)
-    axes[4].set_title('damaged クラスの CAM + 元画像', fontsize=fontsize)
-    axes[4].axis('off')
-
-    # 5. テキスト情報
-    class_names = ['intact', 'damaged']
+    # 3. テキスト情報
+    class_names = ['Intact', 'Damaged']
     pred_class_name = class_names[predicted_class]
     true_class_name = class_names[true_class]
-    is_correct = 'Correct' if predicted_class == true_class else 'Incorrect'
+    is_correct = '正判定' if predicted_class == true_class else '誤判定'
     
-    text_content = f"""予測確率:
-intact: {prob_intact:.2%}
-damaged: {prob_damaged:.2%}
+    text_content = f"""
+                    予測確率
+                    被害なし: {prob_intact:.2%}
+                    被害あり: {prob_damaged:.2%}
 
-予測クラス: {pred_class_name}
-正解クラス: {true_class_name}
-予測結果: {is_correct}"""
+                    予測クラス: {pred_class_name}
+                    正解クラス: {true_class_name}
+                    予測結果: {is_correct}
+                """
     
-    axes[5].text(0.5, 0.5, text_content, 
+    # text を入れる subplot を正方形化
+    # axes[3].set_box_aspect(1)
+    axes[3].text(x = 0.2, y = 0.5, s = text_content, 
                 ha='center', va='center', fontsize=fontsize, 
-                transform=axes[5].transAxes,
-                family='monospace')
+                )
+
+    axes[3].axis('off')
+
+    # 5. intact クラスの Grad-CAM++
+    im1 = axes[4].imshow(cam_intact_norm, cmap='jet', vmin=0, vmax=1)
+    axes[4].set_title('被害なしクラスの\nGrad-CAM++', fontsize=fontsize)
+    axes[4].axis('off')
+    plt.colorbar(im1, ax=axes[4], fraction=0.046, pad=0.04).ax.tick_params(labelsize=labelsize)
+
+    # 6. damaged クラスの Grad-CAM++
+    im3 = axes[5].imshow(cam_damaged_norm, cmap='jet', vmin=0, vmax=1)
+    axes[5].set_title('被害ありクラスの\nGrad-CAM++', fontsize=fontsize)
     axes[5].axis('off')
+    plt.colorbar(im3, ax=axes[5], fraction=0.046, pad=0.04).ax.tick_params(labelsize=labelsize)
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.subplots_adjust(top=1, bottom=0, left=0, right=1)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
 
 
@@ -258,8 +279,8 @@ def get_true_class_from_path(image_path: str) -> int:
     Returns:
         正解クラスID (0: intact, 1: damaged)
     """
-    path_parts = Path(image_path).parts
-    # ディレクトリ名からクラスを判定
+    path_parts = [p.lower() for p in Path(image_path).parts]
+    # ディレクトリ名からクラスを判定（大文字小文字を区別しない）
     if 'intact' in path_parts:
         return 0
     elif 'damaged' in path_parts:
@@ -278,7 +299,7 @@ def process_single_image(
     img_size: Tuple[int, int],
     device: torch.device = None,
     alpha: float = 0.5
-):
+) -> Optional[Dict]:
     """
     単一画像に対してXAI可視化を実行する
     
@@ -291,14 +312,38 @@ def process_single_image(
         img_size: 画像サイズ (H, W)
         device: デバイス
         alpha: αブレンドの透明度
+    
+    Returns:
+        分類結果の辞書（ファイル名、確率、予測クラス、正解クラス、分類正誤）またはNone（エラー時）
     """
     try:
         # 画像前処理
         img_tensor, img_array, original_size = preprocess_image(image_path, img_size)
-        img_tensor = img_tensor.to(device)
+        img_tensor = img_tensor.unsqueeze(0).to(device)  # (1, 3, H, W)に変換
         
         # クラス確率と予測クラスを取得
-        prob_array, predicted_class = get_class_probabilities(model, img_tensor, device)
+        prob_array, predicted_class_id = get_class_probabilities(model, img_tensor, device)
+        
+        # モデルの出力順序: 訓練コードでは Classes = ["Intact", "Damaged"]
+        # つまり、prob_array[0] = Intact, prob_array[1] = Damaged
+        # しかし、実際のモデル出力が逆の可能性を考慮し、確率の値から予測クラスを決定
+        prob_at_index_0 = prob_array[0]
+        prob_at_index_1 = prob_array[1]
+        
+        # 確率が高い方のインデックスを予測クラスとする
+        if prob_at_index_1 > prob_at_index_0:
+            predicted_class = 1  # Damaged
+        else:
+            predicted_class = 0  # Intact
+        
+        # 予測クラスID（argmaxの結果）と確率から計算した予測クラスが一致することを確認
+        if predicted_class != predicted_class_id:
+            print(f"  警告: 予測クラスID不一致 - argmax={predicted_class_id}, 確率比較={predicted_class} (prob[0]={prob_at_index_0:.4f}, prob[1]={prob_at_index_1:.4f})")
+            # argmaxの結果を優先（モデルの出力を信頼）
+            predicted_class = predicted_class_id
+        
+        # 確率の割り当て: モデルの出力順序に従う
+        # prob_array[0] = Intact, prob_array[1] = Damaged
         prob_intact = prob_array[0]
         prob_damaged = prob_array[1]
         
@@ -320,6 +365,7 @@ def process_single_image(
         
         # 画像名を取得
         image_name = Path(image_path).stem
+        file_name = Path(image_path).name
         
         # 出力ファイル名
         output_path = os.path.join(output_dir, f"{image_name}.png")
@@ -339,10 +385,23 @@ def process_single_image(
             alpha=alpha
         )
         
-        print(f"✓ {Path(image_path).name}")
+        # 分類結果を返す
+        class_names = ['Intact', 'Damaged']
+        result = {
+            'ファイル名': file_name,
+            '被害なし確率': prob_intact,
+            '被害あり確率': prob_damaged,
+            '予測クラス': class_names[predicted_class],
+            '正解クラス': class_names[true_class],
+            '分類正誤': '正判定' if predicted_class == true_class else '誤判定'
+        }
+        
+        print(f"✓ {file_name}")
+        return result
         
     except Exception as e:
         print(f"✗ エラー ({Path(image_path).name}): {e}")
+        return None
 
 
 def main(
@@ -350,7 +409,7 @@ def main(
     test_image_dir: str,
     output_root_dir: str,
     alpha: float = 0.5,
-    img_size: Tuple[int, int] = (224, 224),
+    img_size: int = 224,
     use_pretrained: bool = False,
 ):
     """
@@ -383,7 +442,7 @@ def main(
     test_images = []
     
     # intact/とdamaged/ディレクトリから画像を取得
-    for subdir in ['intact', 'damaged']:
+    for subdir in ['Intact', 'Damaged']:
         subdir_path = test_image_dir / subdir
         if subdir_path.exists():
             for ext in image_extensions:
@@ -411,9 +470,12 @@ def main(
     print(f"Grad-CAM++ で処理中...")
     print(f"{'='*60}")
     
+    # 分類結果を保存するリスト
+    results: List[Dict] = []
+    
     # 各画像を処理
     for img_path in test_images:
-        process_single_image(
+        result = process_single_image(
             model=model,
             cam_method=cam_method,
             image_path=str(img_path),
@@ -423,6 +485,40 @@ def main(
             device=device,
             alpha=alpha
         )
+        if result is not None:
+            results.append(result)
+    
+    # 分類結果をCSVに出力
+    if len(results) > 0:
+        df_results = pd.DataFrame(results)
+        csv_path = output_root_dir / 'classification_results.csv'
+        df_results.to_csv(csv_path, index=False, encoding='utf-8-sig')
+        print(f"\n分類結果をCSVに出力しました: {csv_path}")
+        
+        # 混同行列を計算
+        class_names = ['Intact', 'Damaged']
+        y_true = [class_names.index(row['正解クラス']) for row in results]
+        y_pred = [class_names.index(row['予測クラス']) for row in results]
+        
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        df_cm = pd.DataFrame(
+            cm,
+            index=[f'正解: {name}' for name in class_names],
+            columns=[f'予測: {name}' for name in class_names]
+        )
+        
+        # 混同行列をCSVに出力
+        cm_csv_path = output_root_dir / 'confusion_matrix.csv'
+        df_cm.to_csv(cm_csv_path, encoding='utf-8-sig')
+        print(f"混同行列をCSVに出力しました: {cm_csv_path}")
+        
+        # 混同行列を表示
+        print("\n混同行列:")
+        print(df_cm)
+        
+        # 精度を計算
+        accuracy = sum(1 for r in results if r['分類正誤'] == '正判定') / len(results)
+        print(f"\n精度: {accuracy:.4f} ({accuracy*100:.2f}%)")
     
     print(f"\n{'='*60}")
     print("処理完了!")
@@ -436,7 +532,7 @@ if __name__ == "__main__":
     TEST_IMAGE_DIR = r"C:\Users\kyohe\Aerial_Photo_Classifier\Sandbox\XAI_test\Test"  # intact/とdamaged/サブディレクトリを含む
     OUTPUT_ROOT_DIR = r"C:\Users\kyohe\Aerial_Photo_Classifier\Sandbox\XAI_test\Result_XAI"
     ALPHA = 0.4
-    IMG_SIZE = (224, 224)
+    IMG_SIZE = 224
     USE_PRETRAINED = False
 
     print(f"use_pretrained = {USE_PRETRAINED}")
